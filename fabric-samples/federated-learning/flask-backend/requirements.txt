@@ -1,0 +1,10 @@
+Flask
+Flask-CORS
+torch
+torchvision
+numpy
+python-dotenv
+requests
+pandas
+tqdm
+fabric-sdk-py
