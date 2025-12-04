@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 FABRIC_CONFIG = {
     'channel': 'vpsa-channel',
     'chaincode': 'vpsa',
-    'network_path': '/home/amalendu/college/federatedLearning/fabric-samples/test-network'
+    'network_path': '/home/amalendumanoj/project/Federated-Learning-with-zkp-and-blockchain/fabric-samples/test-network'
 }
 
 class FabricGateway:

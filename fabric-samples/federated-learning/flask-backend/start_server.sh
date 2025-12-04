@@ -1,6 +1,6 @@
 #!/bin/bash
 
-cd /home/amalendu/college/federatedLearning/fabric-samples/federated-learning/flask-backend
+cd /home/amalendumanoj/project/Federated-Learning-with-zkp-and-blockchain/fabric-samples/federated-learning/flask-backend
 
 # Remove old venv
 rm -rf venv

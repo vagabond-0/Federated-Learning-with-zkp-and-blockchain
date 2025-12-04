@@ -32,7 +32,7 @@ print_section() {
 }
 
 # Change to test-network directory
-cd /home/amalendu/college/federatedLearning/fabric-samples/test-network
+cd /home/amalendumanoj/project/Federated-Learning-with-zkp-and-blockchain/fabric-samples/test-network
 
 print_section "STEP 1: CLEANING UP EXISTING NETWORK"
 ./network.sh down

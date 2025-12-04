@@ -6,6 +6,7 @@ set -e
 
 GREEN='\033[0;32m'
 BLUE='\033[0;34m'
+RED='\033[0;31m'
 NC='\033[0m'
 
 print_test() {
@@ -16,7 +17,17 @@ print_success() {
     echo -e "${GREEN}✅ $1${NC}"
 }
 
-cd /home/amalendu/college/federatedLearning/fabric-samples/test-network
+print_error() {
+    echo -e "${RED}❌ $1${NC}"
+}
+
+# Wait for transaction to be committed
+wait_for_commit() {
+    echo "   Waiting for transaction to commit..."
+    sleep 5
+}
+
+cd /home/amalendumanoj/project/Federated-Learning-with-zkp-and-blockchain/fabric-samples/test-network
 
 # Set environment for Org1
 export CORE_PEER_TLS_ENABLED=true
@@ -42,8 +53,11 @@ peer chaincode invoke \
     -n vpsa \
     --peerAddresses localhost:7051 \
     --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt" \
-    -c '{"function":"RegisterClient","Args":["client-org1-source","source","10000"]}'
-sleep 3
+    --peerAddresses localhost:9051 \
+    --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt" \
+    -c '{"function":"RegisterClient","Args":["client-org1-source","source","10000"]}' \
+    --waitForEvent
+wait_for_commit
 print_success "Source client registered"
 
 print_test "2" "Register Target Domain Client"
@@ -56,16 +70,31 @@ peer chaincode invoke \
     -n vpsa \
     --peerAddresses localhost:7051 \
     --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt" \
-    -c '{"function":"RegisterClient","Args":["client-org2-target","target","8000"]}'
-sleep 3
+    --peerAddresses localhost:9051 \
+    --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt" \
+    -c '{"function":"RegisterClient","Args":["client-org2-target","target","8000"]}' \
+    --waitForEvent
+wait_for_commit
 print_success "Target client registered"
 
 print_test "3" "Query All Clients"
+CLIENTS=$(peer chaincode query \
+    -C vpsa-channel \
+    -n vpsa \
+    -c '{"function":"GetAllClients","Args":[]}')
+echo "   Result: $CLIENTS"
+if [[ "$CLIENTS" == "[]" || -z "$CLIENTS" ]]; then
+    print_error "No clients found - registration may have failed"
+    exit 1
+fi
+print_success "Clients retrieved"
+
+print_test "3.1" "Verify Source Client Exists"
 peer chaincode query \
     -C vpsa-channel \
     -n vpsa \
-    -c '{"function":"GetAllClients","Args":[]}'
-print_success "Clients retrieved"
+    -c '{"function":"GetClient","Args":["client-org1-source"]}'
+print_success "Source client verified"
 
 print_test "4" "Submit Local Model from Source Domain"
 peer chaincode invoke \
@@ -77,8 +106,11 @@ peer chaincode invoke \
     -n vpsa \
     --peerAddresses localhost:7051 \
     --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt" \
-    -c '{"function":"SubmitLocalModel","Args":["model-source-r0","client-org1-source","{\"layer1\":[0.5,0.3],\"layer2\":[0.8,0.2]}","{\"latent_dim\":768,\"features\":[0.1,0.2]}","{\"class1\":[0.9,0.1],\"class2\":[0.2,0.8]}","0.85","0.15","0.05","1000"]}'
-sleep 3
+    --peerAddresses localhost:9051 \
+    --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt" \
+    -c '{"function":"SubmitLocalModel","Args":["model-source-r0","client-org1-source","{\"layer1\":[0.5,0.3],\"layer2\":[0.8,0.2]}","{\"latent_dim\":768,\"features\":[0.1,0.2]}","{\"class1\":[0.9,0.1],\"class2\":[0.2,0.8]}","0.85","0.15","0.05","1000"]}' \
+    --waitForEvent
+wait_for_commit
 print_success "Source model submitted"
 
 print_test "5" "Submit Local Model from Target Domain"
@@ -91,8 +123,11 @@ peer chaincode invoke \
     -n vpsa \
     --peerAddresses localhost:7051 \
     --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt" \
-    -c '{"function":"SubmitLocalModel","Args":["model-target-r0","client-org2-target","{\"layer1\":[0.4,0.6],\"layer2\":[0.7,0.3]}","{\"latent_dim\":768,\"features\":[0.15,0.25]}","{\"class1\":[0.85,0.15],\"class2\":[0.25,0.75]}","0.78","0.22","0.08","800"]}'
-sleep 3
+    --peerAddresses localhost:9051 \
+    --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt" \
+    -c '{"function":"SubmitLocalModel","Args":["model-target-r0","client-org2-target","{\"layer1\":[0.4,0.6],\"layer2\":[0.7,0.3]}","{\"latent_dim\":768,\"features\":[0.15,0.25]}","{\"class1\":[0.85,0.15],\"class2\":[0.25,0.75]}","0.78","0.22","0.08","800"]}' \
+    --waitForEvent
+wait_for_commit
 print_success "Target model submitted"
 
 print_test "6" "Query Local Model"
@@ -112,8 +147,11 @@ peer chaincode invoke \
     -n vpsa \
     --peerAddresses localhost:7051 \
     --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt" \
-    -c '{"function":"AggregateModels","Args":["[\"model-source-r0\",\"model-target-r0\"]","{\"aggregated_layer1\":[0.45,0.45],\"aggregated_layer2\":[0.75,0.25]}","{\"aggregated_class1\":[0.875,0.125],\"aggregated_class2\":[0.225,0.775]}","0.82","0.18","0.92"]}'
-sleep 3
+    --peerAddresses localhost:9051 \
+    --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt" \
+    -c '{"function":"AggregateModels","Args":["[\"model-source-r0\",\"model-target-r0\"]","{\"aggregated_layer1\":[0.45,0.45],\"aggregated_layer2\":[0.75,0.25]}","{\"aggregated_class1\":[0.875,0.125],\"aggregated_class2\":[0.225,0.775]}","0.82","0.18","0.92"]}' \
+    --waitForEvent
+wait_for_commit
 print_success "Models aggregated"
 
 print_test "8" "Query Updated Global Model"
@@ -140,8 +178,11 @@ peer chaincode invoke \
     -n vpsa \
     --peerAddresses localhost:7051 \
     --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org1.example.com/peers/peer0.org1.example.com/tls/ca.crt" \
-    -c '{"function":"UpdateAggregationConfig","Args":["5","0.7","0.3","0.15"]}'
-sleep 3
+    --peerAddresses localhost:9051 \
+    --tlsRootCertFiles "${PWD}/organizations/peerOrganizations/org2.example.com/peers/peer0.org2.example.com/tls/ca.crt" \
+    -c '{"function":"UpdateAggregationConfig","Args":["5","0.7","0.3","0.15"]}' \
+    --waitForEvent
+wait_for_commit
 print_success "Config updated"
 
 print_test "11" "Query Model History"
