@@ -1,19 +1,38 @@
+/*
+ * VPSA Chaincode with Private Data Collections
+ * Virtual Prototype Semantic Alignment for Federated Learning
+ *
+ * Deploy with: --collections-config collections_config.json
+ */
+
 package main
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
 	"fmt"
+	"io"
 	"time"
 
 	"github.com/hyperledger/fabric-contract-api-go/contractapi"
 )
 
-// VPSAContract provides functions for VPSA-based federated learning
+// Collection names
+const (
+	CollectionSharedModels     = "collectionSharedModels"
+	CollectionAggregatedModels = "collectionAggregatedModels"
+)
+
+// VPSAContract implements the VPSA federated learning chaincode
 type VPSAContract struct {
 	contractapi.Contract
 }
 
-// Client represents a participating client/peer in federated learning
+// ============================================================================
+// DATA TYPES
+// ============================================================================
+
 type Client struct {
 	ClientID      string  `json:"clientID"`
 	Domain        string  `json:"domain"`
@@ -24,43 +43,59 @@ type Client struct {
 	DocType       string  `json:"docType"`
 }
 
-// LocalModel represents a client's locally trained model
-type LocalModel struct {
-	ModelID        string  `json:"modelID"`
-	ClientID       string  `json:"clientID"`
-	Round          int     `json:"round"`
-	Domain         string  `json:"domain"`
-	Weights        string  `json:"weights"`
-	LatentFeatures string  `json:"latentFeatures"`
-	Prototypes     string  `json:"prototypes"`
-	Accuracy       float64 `json:"accuracy"`
-	Loss           float64 `json:"loss"`
-	AlignmentLoss  float64 `json:"alignmentLoss"`
-	DataSize       int     `json:"dataSize"`
-	Timestamp      string  `json:"timestamp"`
-	Status         string  `json:"status"`
-	DocType        string  `json:"docType"` // Added for type identification
+type LocalModelMeta struct {
+	ModelID       string  `json:"modelID"`
+	ClientID      string  `json:"clientID"`
+	Round         int     `json:"round"`
+	Domain        string  `json:"domain"`
+	DataSize      int     `json:"dataSize"`
+	Accuracy      float64 `json:"accuracy"`
+	Loss          float64 `json:"loss"`
+	AlignmentLoss float64 `json:"alignmentLoss"`
+	DataHash      string  `json:"dataHash"`
+	Timestamp     string  `json:"timestamp"`
+	Status        string  `json:"status"`
+	DocType       string  `json:"docType"`
 }
 
-// GlobalModel represents the aggregated global model
+type LocalModelPrivatePayload struct {
+	ModelID        string               `json:"modelID"`
+	ClientID       string               `json:"clientID"`
+	Weights        map[string][]float64 `json:"weights"`
+	LatentFeatures map[string][]float64 `json:"latentFeatures"`
+	Prototypes     map[string][]float64 `json:"prototypes"`
+	Accuracy       float64              `json:"accuracy"`
+	Loss           float64              `json:"loss"`
+	AlignmentLoss  float64              `json:"alignmentLoss"`
+	DataSize       int                  `json:"dataSize"`
+}
+
 type GlobalModel struct {
-	ModelID          string  `json:"modelID"`
-	Version          int     `json:"version"`
-	Round            int     `json:"round"`
-	Weights          string  `json:"weights"`
-	GlobalPrototypes string  `json:"globalPrototypes"`
-	LatentDim        int     `json:"latentDim"`
-	NumLatents       int     `json:"numLatents"`
-	Accuracy         float64 `json:"accuracy"`
-	Loss             float64 `json:"loss"`
-	NumClients       int     `json:"numClients"`
-	SourceClients    int     `json:"sourceClients"`
-	TargetClients    int     `json:"targetClients"`
-	Timestamp        string  `json:"timestamp"`
-	Status           string  `json:"status"`
+	ModelID          string   `json:"modelID"`
+	Version          int      `json:"version"`
+	Round            int      `json:"round"`
+	LatentDim        int      `json:"latentDim"`
+	NumLatents       int      `json:"numLatents"`
+	Accuracy         float64  `json:"accuracy"`
+	Loss             float64  `json:"loss"`
+	AlignmentScore   float64  `json:"alignmentScore"`
+	NumClients       int      `json:"numClients"`
+	SourceClients    int      `json:"sourceClients"`
+	TargetClients    int      `json:"targetClients"`
+	PrivateDataKey   string   `json:"privateDataKey"`
+	Timestamp        string   `json:"timestamp"`
+	Status           string   `json:"status"`
+	ContributorsList []string `json:"contributorsList"`
 }
 
-// AggregationConfig stores configuration for model aggregation
+type GlobalModelPrivatePayload struct {
+	ModelID              string               `json:"modelID"`
+	Round                int                  `json:"round"`
+	AggregatedWeights    map[string][]float64 `json:"aggregatedWeights"`
+	AggregatedPrototypes map[string][]float64 `json:"aggregatedPrototypes"`
+	Timestamp            string               `json:"timestamp"`
+}
+
 type AggregationConfig struct {
 	ConfigID             string  `json:"configID"`
 	MinClients           int     `json:"minClients"`
@@ -73,65 +108,166 @@ type AggregationConfig struct {
 	LastUpdated          string  `json:"lastUpdated"`
 }
 
-// TrainingMetrics stores per-round training metrics
 type TrainingMetrics struct {
-	MetricID        string  `json:"metricID"`
-	Round           int     `json:"round"`
-	GlobalAccuracy  float64 `json:"globalAccuracy"`
-	GlobalLoss      float64 `json:"globalLoss"`
-	SourceAccuracy  float64 `json:"sourceAccuracy"`
-	TargetAccuracy  float64 `json:"targetAccuracy"`
-	AlignmentScore  float64 `json:"alignmentScore"`
-	NumParticipants int     `json:"numParticipants"`
-	Timestamp       string  `json:"timestamp"`
+	MetricID        string   `json:"metricID"`
+	Round           int      `json:"round"`
+	GlobalAccuracy  float64  `json:"globalAccuracy"`
+	GlobalLoss      float64  `json:"globalLoss"`
+	SourceAccuracy  float64  `json:"sourceAccuracy"`
+	TargetAccuracy  float64  `json:"targetAccuracy"`
+	AlignmentScore  float64  `json:"alignmentScore"`
+	NumParticipants int      `json:"numParticipants"`
+	ModelIDs        []string `json:"modelIDs"`
+	Timestamp       string   `json:"timestamp"`
 }
 
-// getTxTimestamp retrieves the transaction timestamp
+type AggregationResult struct {
+	Success        bool    `json:"success"`
+	NumAggregated  int     `json:"numAggregated"`
+	GlobalAccuracy float64 `json:"globalAccuracy"`
+	GlobalLoss     float64 `json:"globalLoss"`
+	AlignmentScore float64 `json:"alignmentScore"`
+	Round          int     `json:"round"`
+	TxID           string  `json:"txId"`
+	Message        string  `json:"message"`
+}
+
+// ============================================================================
+// HELPER FUNCTIONS
+// ============================================================================
+
 func getTxTimestamp(ctx contractapi.TransactionContextInterface) (string, error) {
 	txTimestamp, err := ctx.GetStub().GetTxTimestamp()
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to get timestamp: %v", err)
 	}
 	return time.Unix(txTimestamp.Seconds, int64(txTimestamp.Nanos)).UTC().Format(time.RFC3339Nano), nil
 }
 
-// InitLedger initializes the chaincode
-func (c *VPSAContract) InitLedger(ctx contractapi.TransactionContextInterface) error {
-	timestamp, err := getTxTimestamp(ctx)
+func readTransient(ctx contractapi.TransactionContextInterface, key string) ([]byte, error) {
+	transientMap, err := ctx.GetStub().GetTransient()
 	if err != nil {
-		return fmt.Errorf("failed to get transaction timestamp: %v", err)
+		return nil, fmt.Errorf("failed to get transient map: %v", err)
 	}
+
+	if data, exists := transientMap[key]; exists {
+		return data, nil
+	}
+
+	for _, altKey := range []string{"model", "payload", "data"} {
+		if data, ok := transientMap[altKey]; ok {
+			return data, nil
+		}
+	}
+	return nil, fmt.Errorf("key '%s' not found in transient map", key)
+}
+
+func compressGzip(data []byte) ([]byte, error) {
+	var buf bytes.Buffer
+	writer := gzip.NewWriter(&buf)
+	if _, err := writer.Write(data); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+func decompressGzip(data []byte) ([]byte, error) {
+	reader, err := gzip.NewReader(bytes.NewReader(data))
+	if err != nil {
+		return data, nil
+	}
+	defer reader.Close()
+	return io.ReadAll(reader)
+}
+
+func safeAverageVectors(vectors [][]float64) ([]float64, error) {
+	if len(vectors) == 0 {
+		return nil, fmt.Errorf("no vectors")
+	}
+	length := len(vectors[0])
+	result := make([]float64, length)
+	for _, v := range vectors {
+		if len(v) != length {
+			return nil, fmt.Errorf("length mismatch")
+		}
+		for i, val := range v {
+			result[i] += val
+		}
+	}
+	for i := range result {
+		result[i] /= float64(len(vectors))
+	}
+	return result, nil
+}
+
+func safeWeightedAverageVectors(vectors [][]float64, weights []float64) ([]float64, error) {
+	if len(vectors) == 0 || len(vectors) != len(weights) {
+		return nil, fmt.Errorf("invalid input")
+	}
+	length := len(vectors[0])
+	result := make([]float64, length)
+	totalWeight := 0.0
+	for idx, v := range vectors {
+		if len(v) != length {
+			return nil, fmt.Errorf("length mismatch")
+		}
+		totalWeight += weights[idx]
+		for i, val := range v {
+			result[i] += val * weights[idx]
+		}
+	}
+	if totalWeight > 0 {
+		for i := range result {
+			result[i] /= totalWeight
+		}
+	}
+	return result, nil
+}
+
+func calculateDomainAccuracy(models []LocalModelPrivatePayload) float64 {
+	if len(models) == 0 {
+		return 0.0
+	}
+	var total float64
+	var totalSize int
+	for _, m := range models {
+		total += m.Accuracy * float64(m.DataSize)
+		totalSize += m.DataSize
+	}
+	if totalSize > 0 {
+		return total / float64(totalSize)
+	}
+	return 0.0
+}
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+
+func (c *VPSAContract) InitLedger(ctx contractapi.TransactionContextInterface) error {
+	fmt.Println("INFO: InitLedger called")
+
+	timestamp, _ := getTxTimestamp(ctx)
 
 	globalModel := GlobalModel{
 		ModelID:          "vpsa-global-model",
 		Version:          0,
 		Round:            0,
-		Weights:          "{}",
-		GlobalPrototypes: "{}",
 		LatentDim:        768,
 		NumLatents:       512,
-		Accuracy:         0.0,
-		Loss:             0.0,
-		NumClients:       0,
-		SourceClients:    0,
-		TargetClients:    0,
 		Timestamp:        timestamp,
 		Status:           "initialized",
+		ContributorsList: []string{},
 	}
-
-	globalJSON, err := json.Marshal(globalModel)
-	if err != nil {
-		return err
-	}
-
-	err = ctx.GetStub().PutState("vpsa-global-model", globalJSON)
-	if err != nil {
-		return err
-	}
+	globalJSON, _ := json.Marshal(globalModel)
+	ctx.GetStub().PutState("vpsa-global-model", globalJSON)
 
 	config := AggregationConfig{
 		ConfigID:             "vpsa-config",
-		MinClients:           3,
+		MinClients:           2,
 		MaxRounds:            100,
 		SourceWeight:         0.6,
 		TargetWeight:         0.4,
@@ -140,393 +276,520 @@ func (c *VPSAContract) InitLedger(ctx contractapi.TransactionContextInterface) e
 		CurrentRound:         0,
 		LastUpdated:          timestamp,
 	}
+	configJSON, _ := json.Marshal(config)
+	ctx.GetStub().PutState("vpsa-config", configJSON)
 
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return err
-	}
+	clientListJSON, _ := json.Marshal([]string{})
+	ctx.GetStub().PutState("client-list", clientListJSON)
 
-	// Initialize client list
-	err = ctx.GetStub().PutState("vpsa-config", configJSON)
-	if err != nil {
-		return err
-	}
-
-	// Create empty client list
-	clientList := []string{}
-	clientListJSON, _ := json.Marshal(clientList)
-	return ctx.GetStub().PutState("client-list", clientListJSON)
+	fmt.Println("INFO: InitLedger completed")
+	return nil
 }
 
-// RegisterClient registers a new client
+// ============================================================================
+// CLIENT MANAGEMENT
+// ============================================================================
+
 func (c *VPSAContract) RegisterClient(ctx contractapi.TransactionContextInterface,
 	clientID string, domain string, datasetSize int) error {
 
-	exists, err := c.ClientExists(ctx, clientID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return fmt.Errorf("client %s already registered", clientID)
+	fmt.Printf("INFO: RegisterClient - %s, %s\n", clientID, domain)
+
+	if domain != "source" && domain != "target" {
+		return fmt.Errorf("invalid domain: must be 'source' or 'target'")
 	}
 
-	timestamp, err := getTxTimestamp(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get transaction timestamp: %v", err)
+	exists, _ := c.ClientExists(ctx, clientID)
+	if exists {
+		return fmt.Errorf("client %s already exists", clientID)
 	}
+
+	timestamp, _ := getTxTimestamp(ctx)
 
 	client := Client{
-		ClientID:      clientID,
-		Domain:        domain,
-		IsActive:      true,
-		LastUpdate:    timestamp,
-		DatasetSize:   datasetSize,
-		ModelAccuracy: 0.0,
-		DocType:       "client",
+		ClientID:    clientID,
+		Domain:      domain,
+		IsActive:    true,
+		LastUpdate:  timestamp,
+		DatasetSize: datasetSize,
+		DocType:     "client",
 	}
+	clientJSON, _ := json.Marshal(client)
+	ctx.GetStub().PutState(clientID, clientJSON)
 
-	clientJSON, err := json.Marshal(client)
-	if err != nil {
-		return err
-	}
-
-	// Store client
-	err = ctx.GetStub().PutState(clientID, clientJSON)
-	if err != nil {
-		return err
-	}
-
-	// Update client list
-	clientListJSON, err := ctx.GetStub().GetState("client-list")
-	if err != nil {
-		return err
-	}
-
+	clientListJSON, _ := ctx.GetStub().GetState("client-list")
 	var clientList []string
-	if clientListJSON != nil {
-		json.Unmarshal(clientListJSON, &clientList)
-	}
-
+	json.Unmarshal(clientListJSON, &clientList)
 	clientList = append(clientList, clientID)
 	clientListJSON, _ = json.Marshal(clientList)
-	return ctx.GetStub().PutState("client-list", clientListJSON)
+	ctx.GetStub().PutState("client-list", clientListJSON)
+
+	return nil
 }
 
-// ClientExists checks if a client is registered
 func (c *VPSAContract) ClientExists(ctx contractapi.TransactionContextInterface, clientID string) (bool, error) {
-	clientJSON, err := ctx.GetStub().GetState(clientID)
-	if err != nil {
-		return false, fmt.Errorf("failed to read from world state: %v", err)
-	}
-	return clientJSON != nil, nil
+	data, err := ctx.GetStub().GetState(clientID)
+	return data != nil, err
 }
 
-// GetClient retrieves client information
 func (c *VPSAContract) GetClient(ctx contractapi.TransactionContextInterface, clientID string) (*Client, error) {
-	clientJSON, err := ctx.GetStub().GetState(clientID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read from world state: %v", err)
+	data, err := ctx.GetStub().GetState(clientID)
+	if err != nil || data == nil {
+		return nil, fmt.Errorf("client %s not found", clientID)
 	}
-	if clientJSON == nil {
-		return nil, fmt.Errorf("client %s does not exist", clientID)
-	}
-
 	var client Client
-	err = json.Unmarshal(clientJSON, &client)
-	if err != nil {
-		return nil, err
-	}
-
+	json.Unmarshal(data, &client)
 	return &client, nil
 }
 
-// GetAllClients retrieves all registered clients (LevelDB compatible)
 func (c *VPSAContract) GetAllClients(ctx contractapi.TransactionContextInterface) ([]*Client, error) {
-	clientListJSON, err := ctx.GetStub().GetState("client-list")
-	if err != nil {
-		return nil, err
-	}
-
-	var clientList []string
-	if clientListJSON != nil {
-		json.Unmarshal(clientListJSON, &clientList)
-	}
+	listJSON, _ := ctx.GetStub().GetState("client-list")
+	var list []string
+	json.Unmarshal(listJSON, &list)
 
 	var clients []*Client
-	for _, clientID := range clientList {
-		client, err := c.GetClient(ctx, clientID)
-		if err == nil {
+	for _, id := range list {
+		if client, err := c.GetClient(ctx, id); err == nil {
 			clients = append(clients, client)
 		}
 	}
-
 	return clients, nil
 }
 
-// SubmitLocalModel allows a client to submit their locally trained model
+// ============================================================================
+// MODEL SUBMISSION
+// ============================================================================
+
 func (c *VPSAContract) SubmitLocalModel(ctx contractapi.TransactionContextInterface,
-	modelID string, clientID string, weights string, latentFeatures string,
-	prototypes string, accuracy float64, loss float64, alignmentLoss float64,
-	dataSize int) error {
+	modelID, clientID, weights, latentFeatures, prototypes string,
+	accuracy, loss, alignmentLoss float64, dataSize int) error {
+
+	fmt.Printf("INFO: SubmitLocalModel - %s\n", modelID)
 
 	client, err := c.GetClient(ctx, clientID)
 	if err != nil {
 		return err
 	}
-
 	if !client.IsActive {
-		return fmt.Errorf("client %s is not active", clientID)
+		return fmt.Errorf("client %s inactive", clientID)
 	}
 
-	config, err := c.GetAggregationConfig(ctx)
-	if err != nil {
-		return err
-	}
+	config, _ := c.GetAggregationConfig(ctx)
+	timestamp, _ := getTxTimestamp(ctx)
 
-	timestamp, err := getTxTimestamp(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get transaction timestamp: %v", err)
-	}
+	// Parse and store in private collection
+	var weightsMap, latentMap, protoMap map[string][]float64
+	json.Unmarshal([]byte(weights), &weightsMap)
+	json.Unmarshal([]byte(latentFeatures), &latentMap)
+	json.Unmarshal([]byte(prototypes), &protoMap)
 
-	localModel := LocalModel{
+	privatePayload := LocalModelPrivatePayload{
 		ModelID:        modelID,
 		ClientID:       clientID,
-		Round:          config.CurrentRound,
-		Domain:         client.Domain,
-		Weights:        weights,
-		LatentFeatures: latentFeatures,
-		Prototypes:     prototypes,
+		Weights:        weightsMap,
+		LatentFeatures: latentMap,
+		Prototypes:     protoMap,
 		Accuracy:       accuracy,
 		Loss:           loss,
 		AlignmentLoss:  alignmentLoss,
 		DataSize:       dataSize,
-		Timestamp:      timestamp,
-		Status:         "submitted",
-		DocType:        "localModel",
 	}
+	payloadJSON, _ := json.Marshal(privatePayload)
+	ctx.GetStub().PutPrivateData(CollectionSharedModels, modelID, payloadJSON)
 
-	modelJSON, err := json.Marshal(localModel)
-	if err != nil {
-		return err
+	// Store public metadata
+	meta := LocalModelMeta{
+		ModelID:       modelID,
+		ClientID:      clientID,
+		Round:         config.CurrentRound,
+		Domain:        client.Domain,
+		DataSize:      dataSize,
+		Accuracy:      accuracy,
+		Loss:          loss,
+		AlignmentLoss: alignmentLoss,
+		Timestamp:     timestamp,
+		Status:        "submitted",
+		DocType:       "localModel",
 	}
+	metaJSON, _ := json.Marshal(meta)
+	ctx.GetStub().PutState(modelID, metaJSON)
 
-	err = ctx.GetStub().PutState(modelID, modelJSON)
-	if err != nil {
-		return err
-	}
+	// Update round list
+	roundKey := fmt.Sprintf("round-%d-models", config.CurrentRound)
+	roundJSON, _ := ctx.GetStub().GetState(roundKey)
+	var roundModels []string
+	json.Unmarshal(roundJSON, &roundModels)
+	roundModels = append(roundModels, modelID)
+	roundJSON, _ = json.Marshal(roundModels)
+	ctx.GetStub().PutState(roundKey, roundJSON)
 
 	// Update client
 	client.LastUpdate = timestamp
 	client.ModelAccuracy = accuracy
-	clientJSON, err := json.Marshal(client)
-	if err != nil {
-		return err
-	}
+	clientJSON, _ := json.Marshal(client)
+	ctx.GetStub().PutState(clientID, clientJSON)
 
-	// Store model in round list
-	roundKey := fmt.Sprintf("round-%d-models", config.CurrentRound)
-	roundModelsJSON, _ := ctx.GetStub().GetState(roundKey)
-
-	var roundModels []string
-	if roundModelsJSON != nil {
-		json.Unmarshal(roundModelsJSON, &roundModels)
-	}
-
-	roundModels = append(roundModels, modelID)
-	roundModelsJSON, _ = json.Marshal(roundModels)
-	ctx.GetStub().PutState(roundKey, roundModelsJSON)
-
-	return ctx.GetStub().PutState(clientID, clientJSON)
+	return nil
 }
 
-// GetLocalModel retrieves a local model
-func (c *VPSAContract) GetLocalModel(ctx contractapi.TransactionContextInterface, modelID string) (*LocalModel, error) {
-	modelJSON, err := ctx.GetStub().GetState(modelID)
+func (c *VPSAContract) SubmitLocalModelWithTransient(ctx contractapi.TransactionContextInterface,
+	modelID, clientID string, round int, dataHash string) (string, error) {
+
+	fmt.Printf("INFO: SubmitLocalModelWithTransient - %s\n", modelID)
+
+	client, err := c.GetClient(ctx, clientID)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read from world state: %v", err)
-	}
-	if modelJSON == nil {
-		return nil, fmt.Errorf("model %s does not exist", modelID)
+		return "", err
 	}
 
-	var model LocalModel
-	err = json.Unmarshal(modelJSON, &model)
+	transientData, err := readTransient(ctx, "model")
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
+	decompressed, _ := decompressGzip(transientData)
+
+	var payload LocalModelPrivatePayload
+	if err := json.Unmarshal(decompressed, &payload); err != nil {
+		return "", err
+	}
+
+	payload.ModelID = modelID
+	payload.ClientID = clientID
+
+	payloadJSON, _ := json.Marshal(payload)
+	compressed, _ := compressGzip(payloadJSON)
+	ctx.GetStub().PutPrivateData(CollectionSharedModels, modelID, compressed)
+
+	timestamp, _ := getTxTimestamp(ctx)
+
+	meta := LocalModelMeta{
+		ModelID:       modelID,
+		ClientID:      clientID,
+		Round:         round,
+		Domain:        client.Domain,
+		DataSize:      payload.DataSize,
+		Accuracy:      payload.Accuracy,
+		Loss:          payload.Loss,
+		AlignmentLoss: payload.AlignmentLoss,
+		DataHash:      dataHash,
+		Timestamp:     timestamp,
+		Status:        "submitted",
+		DocType:       "localModelMeta",
+	}
+	metaJSON, _ := json.Marshal(meta)
+	ctx.GetStub().PutState(modelID+"-meta", metaJSON)
+
+	roundKey := fmt.Sprintf("round-%d-models", round)
+	roundJSON, _ := ctx.GetStub().GetState(roundKey)
+	var roundModels []string
+	json.Unmarshal(roundJSON, &roundModels)
+	roundModels = append(roundModels, modelID)
+	roundJSON, _ = json.Marshal(roundModels)
+	ctx.GetStub().PutState(roundKey, roundJSON)
+
+	client.LastUpdate = timestamp
+	client.ModelAccuracy = payload.Accuracy
+	clientJSON, _ := json.Marshal(client)
+	ctx.GetStub().PutState(clientID, clientJSON)
+
+	return timestamp, nil
+}
+
+func (c *VPSAContract) GetLocalModel(ctx contractapi.TransactionContextInterface, modelID string) (*LocalModelMeta, error) {
+	data, err := ctx.GetStub().GetState(modelID)
+	if err != nil || data == nil {
+		return nil, fmt.Errorf("model %s not found", modelID)
+	}
+	var model LocalModelMeta
+	json.Unmarshal(data, &model)
 	return &model, nil
 }
 
-// GetLocalModelsByRound retrieves all local models for a specific round (LevelDB compatible)
-func (c *VPSAContract) GetLocalModelsByRound(ctx contractapi.TransactionContextInterface,
-	round int) ([]*LocalModel, error) {
-
+func (c *VPSAContract) GetLocalModelsByRound(ctx contractapi.TransactionContextInterface, round int) ([]*LocalModelMeta, error) {
 	roundKey := fmt.Sprintf("round-%d-models", round)
-	roundModelsJSON, err := ctx.GetStub().GetState(roundKey)
-	if err != nil {
-		return nil, err
-	}
-
+	roundJSON, _ := ctx.GetStub().GetState(roundKey)
 	var roundModels []string
-	if roundModelsJSON != nil {
-		json.Unmarshal(roundModelsJSON, &roundModels)
-	}
+	json.Unmarshal(roundJSON, &roundModels)
 
-	var models []*LocalModel
-	for _, modelID := range roundModels {
-		model, err := c.GetLocalModel(ctx, modelID)
-		if err == nil && model.Status == "submitted" {
-			models = append(models, model)
+	var models []*LocalModelMeta
+	for _, id := range roundModels {
+		if m, err := c.GetLocalModel(ctx, id); err == nil && m.Status == "submitted" {
+			models = append(models, m)
 		}
 	}
-
 	return models, nil
 }
 
-// AggregateModels performs federated aggregation
-func (c *VPSAContract) AggregateModels(ctx contractapi.TransactionContextInterface,
-	modelIDs []string, aggregatedWeights string, aggregatedPrototypes string,
-	globalAccuracy float64, globalLoss float64, alignmentScore float64) error {
+// ============================================================================
+// AGGREGATION
+// ============================================================================
 
-	globalModel, err := c.GetGlobalModel(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get global model: %v", err)
+func (c *VPSAContract) AggregateModelsWithPrivateData(ctx contractapi.TransactionContextInterface,
+	modelIDsJSON string) (*AggregationResult, error) {
+
+	fmt.Println("INFO: AggregateModelsWithPrivateData called")
+
+	txID := ctx.GetStub().GetTxID()
+
+	var modelIDs []string
+	json.Unmarshal([]byte(modelIDsJSON), &modelIDs)
+
+	if len(modelIDs) == 0 {
+		return nil, fmt.Errorf("no model IDs")
 	}
 
-	config, err := c.GetAggregationConfig(ctx)
-	if err != nil {
-		return err
+	config, _ := c.GetAggregationConfig(ctx)
+
+	if len(modelIDs) < config.MinClients {
+		return &AggregationResult{
+			Success: false,
+			Message: fmt.Sprintf("need %d models, got %d", config.MinClients, len(modelIDs)),
+			TxID:    txID,
+		}, nil
 	}
 
-	timestamp, err := getTxTimestamp(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get transaction timestamp: %v", err)
-	}
-
-	sourceCount := 0
-	targetCount := 0
+	var sourceModels, targetModels, allModels []LocalModelPrivatePayload
+	var processedIDs, skippedIDs []string
 
 	for _, modelID := range modelIDs {
-		model, err := c.GetLocalModel(ctx, modelID)
-		if err != nil {
-			continue
+		privateData, _ := ctx.GetStub().GetPrivateData(CollectionSharedModels, modelID)
+
+		var payload LocalModelPrivatePayload
+
+		if privateData == nil {
+			metaJSON, _ := ctx.GetStub().GetState(modelID)
+			if metaJSON == nil {
+				skippedIDs = append(skippedIDs, modelID)
+				continue
+			}
+			var meta LocalModelMeta
+			json.Unmarshal(metaJSON, &meta)
+			payload = LocalModelPrivatePayload{
+				ModelID:    meta.ModelID,
+				ClientID:   meta.ClientID,
+				Accuracy:   meta.Accuracy,
+				Loss:       meta.Loss,
+				DataSize:   meta.DataSize,
+				Weights:    make(map[string][]float64),
+				Prototypes: make(map[string][]float64),
+			}
+		} else {
+			decompressed, _ := decompressGzip(privateData)
+			json.Unmarshal(decompressed, &payload)
 		}
 
-		if model.Domain == "source" {
-			sourceCount++
-		} else if model.Domain == "target" {
-			targetCount++
+		client, _ := c.GetClient(ctx, payload.ClientID)
+		domain := "unknown"
+		if client != nil {
+			domain = client.Domain
 		}
 
-		model.Status = "aggregated"
-		modelJSON, _ := json.Marshal(model)
-		ctx.GetStub().PutState(modelID, modelJSON)
+		if domain == "source" {
+			sourceModels = append(sourceModels, payload)
+		} else {
+			targetModels = append(targetModels, payload)
+		}
+		allModels = append(allModels, payload)
+		processedIDs = append(processedIDs, modelID)
 	}
 
-	globalModel.Version++
-	globalModel.Round = config.CurrentRound
-	globalModel.Weights = aggregatedWeights
-	globalModel.GlobalPrototypes = aggregatedPrototypes
-	globalModel.Accuracy = globalAccuracy
-	globalModel.Loss = globalLoss
-	globalModel.NumClients = len(modelIDs)
-	globalModel.SourceClients = sourceCount
-	globalModel.TargetClients = targetCount
-	globalModel.Timestamp = timestamp
-	globalModel.Status = "training"
-
-	globalJSON, err := json.Marshal(globalModel)
-	if err != nil {
-		return err
+	if len(allModels) == 0 {
+		return &AggregationResult{Success: false, Message: "no valid models", TxID: txID}, nil
 	}
 
-	err = ctx.GetStub().PutState("vpsa-global-model", globalJSON)
-	if err != nil {
-		return err
+	// VPSA Aggregation
+	aggregatedWeights := make(map[string][]float64)
+	aggregatedPrototypes := make(map[string][]float64)
+
+	allWeightKeys := make(map[string]bool)
+	for _, m := range allModels {
+		for k := range m.Weights {
+			allWeightKeys[k] = true
+		}
 	}
 
+	for key := range allWeightKeys {
+		var srcVecs [][]float64
+		var srcW []float64
+		var tgtVecs [][]float64
+		var tgtW []float64
+
+		for _, m := range sourceModels {
+			if v, ok := m.Weights[key]; ok && len(v) > 0 {
+				srcVecs = append(srcVecs, v)
+				srcW = append(srcW, float64(m.DataSize))
+			}
+		}
+		for _, m := range targetModels {
+			if v, ok := m.Weights[key]; ok && len(v) > 0 {
+				tgtVecs = append(tgtVecs, v)
+				tgtW = append(tgtW, float64(m.DataSize))
+			}
+		}
+
+		var srcAvg, tgtAvg []float64
+		if len(srcVecs) > 0 {
+			srcAvg, _ = safeWeightedAverageVectors(srcVecs, srcW)
+		}
+		if len(tgtVecs) > 0 {
+			tgtAvg, _ = safeWeightedAverageVectors(tgtVecs, tgtW)
+		}
+
+		if srcAvg != nil && tgtAvg != nil && len(srcAvg) == len(tgtAvg) {
+			combined := make([]float64, len(srcAvg))
+			for i := range combined {
+				combined[i] = srcAvg[i]*config.SourceWeight + tgtAvg[i]*config.TargetWeight
+			}
+			aggregatedWeights[key] = combined
+		} else if srcAvg != nil {
+			aggregatedWeights[key] = srcAvg
+		} else if tgtAvg != nil {
+			aggregatedWeights[key] = tgtAvg
+		}
+	}
+
+	// Aggregate prototypes
+	allProtoKeys := make(map[string]bool)
+	for _, m := range allModels {
+		for k := range m.Prototypes {
+			allProtoKeys[k] = true
+		}
+	}
+	for key := range allProtoKeys {
+		var vecs [][]float64
+		for _, m := range allModels {
+			if v, ok := m.Prototypes[key]; ok && len(v) > 0 {
+				vecs = append(vecs, v)
+			}
+		}
+		if avg, err := safeAverageVectors(vecs); err == nil {
+			aggregatedPrototypes[key] = avg
+		}
+	}
+
+	// Compute metrics
+	var totalAcc, totalLoss, totalAlign float64
+	var totalSize int
+	for _, m := range allModels {
+		totalAcc += m.Accuracy * float64(m.DataSize)
+		totalLoss += m.Loss * float64(m.DataSize)
+		totalAlign += m.AlignmentLoss * float64(m.DataSize)
+		totalSize += m.DataSize
+	}
+
+	globalAccuracy := totalAcc / float64(totalSize)
+	globalLoss := totalLoss / float64(totalSize)
+	alignmentScore := 1.0 - (totalAlign / float64(totalSize))
+
+	timestamp, _ := getTxTimestamp(ctx)
+
+	// Store aggregated in private
+	privateKey := fmt.Sprintf("vpsa-global-round-%d", config.CurrentRound)
+	globalPrivate := GlobalModelPrivatePayload{
+		ModelID:              privateKey,
+		Round:                config.CurrentRound,
+		AggregatedWeights:    aggregatedWeights,
+		AggregatedPrototypes: aggregatedPrototypes,
+		Timestamp:            timestamp,
+	}
+	privateJSON, _ := json.Marshal(globalPrivate)
+	compressed, _ := compressGzip(privateJSON)
+	ctx.GetStub().PutPrivateData(CollectionAggregatedModels, privateKey, compressed)
+
+	// Update public global model
+	globalModel := GlobalModel{
+		ModelID:          "vpsa-global-model",
+		Version:          config.CurrentRound + 1,
+		Round:            config.CurrentRound,
+		Accuracy:         globalAccuracy,
+		Loss:             globalLoss,
+		AlignmentScore:   alignmentScore,
+		NumClients:       len(allModels),
+		SourceClients:    len(sourceModels),
+		TargetClients:    len(targetModels),
+		PrivateDataKey:   privateKey,
+		Timestamp:        timestamp,
+		Status:           "aggregated",
+		ContributorsList: processedIDs,
+	}
+	globalJSON, _ := json.Marshal(globalModel)
+	ctx.GetStub().PutState("vpsa-global-model", globalJSON)
+
+	// Mark models aggregated
+	for _, id := range processedIDs {
+		if data, _ := ctx.GetStub().GetState(id); data != nil {
+			var meta LocalModelMeta
+			json.Unmarshal(data, &meta)
+			meta.Status = "aggregated"
+			updated, _ := json.Marshal(meta)
+			ctx.GetStub().PutState(id, updated)
+		}
+	}
+
+	// Store metrics
 	metrics := TrainingMetrics{
 		MetricID:        fmt.Sprintf("metrics-round-%d", config.CurrentRound),
 		Round:           config.CurrentRound,
 		GlobalAccuracy:  globalAccuracy,
 		GlobalLoss:      globalLoss,
+		SourceAccuracy:  calculateDomainAccuracy(sourceModels),
+		TargetAccuracy:  calculateDomainAccuracy(targetModels),
 		AlignmentScore:  alignmentScore,
-		NumParticipants: len(modelIDs),
+		NumParticipants: len(allModels),
+		ModelIDs:        processedIDs,
 		Timestamp:       timestamp,
 	}
+	metricsJSON, _ := json.Marshal(metrics)
+	ctx.GetStub().PutState(metrics.MetricID, metricsJSON)
 
-	metricsJSON, err := json.Marshal(metrics)
-	if err != nil {
-		return err
-	}
-
-	err = ctx.GetStub().PutState(metrics.MetricID, metricsJSON)
-	if err != nil {
-		return err
-	}
-
+	// Increment round
 	config.CurrentRound++
 	config.LastUpdated = timestamp
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return err
-	}
+	configJSON, _ := json.Marshal(config)
+	ctx.GetStub().PutState("vpsa-config", configJSON)
 
-	return ctx.GetStub().PutState("vpsa-config", configJSON)
+	return &AggregationResult{
+		Success:        true,
+		NumAggregated:  len(allModels),
+		GlobalAccuracy: globalAccuracy,
+		GlobalLoss:     globalLoss,
+		AlignmentScore: alignmentScore,
+		Round:          config.CurrentRound - 1,
+		TxID:           txID,
+		Message:        fmt.Sprintf("Aggregated %d (skipped %d)", len(allModels), len(skippedIDs)),
+	}, nil
 }
 
-// GetGlobalModel retrieves the current global model
+// ============================================================================
+// QUERY FUNCTIONS
+// ============================================================================
+
 func (c *VPSAContract) GetGlobalModel(ctx contractapi.TransactionContextInterface) (*GlobalModel, error) {
-	modelJSON, err := ctx.GetStub().GetState("vpsa-global-model")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read from world state: %v", err)
+	data, _ := ctx.GetStub().GetState("vpsa-global-model")
+	if data == nil {
+		return nil, fmt.Errorf("global model not found")
 	}
-	if modelJSON == nil {
-		return nil, fmt.Errorf("global model does not exist")
-	}
-
 	var model GlobalModel
-	err = json.Unmarshal(modelJSON, &model)
-	if err != nil {
-		return nil, err
-	}
-
+	json.Unmarshal(data, &model)
 	return &model, nil
 }
 
-// GetAggregationConfig retrieves the aggregation configuration
 func (c *VPSAContract) GetAggregationConfig(ctx contractapi.TransactionContextInterface) (*AggregationConfig, error) {
-	configJSON, err := ctx.GetStub().GetState("vpsa-config")
-	if err != nil {
-		return nil, fmt.Errorf("failed to read config: %v", err)
+	data, _ := ctx.GetStub().GetState("vpsa-config")
+	if data == nil {
+		return nil, fmt.Errorf("config not found")
 	}
-	if configJSON == nil {
-		return nil, fmt.Errorf("config does not exist")
-	}
-
 	var config AggregationConfig
-	err = json.Unmarshal(configJSON, &config)
-	if err != nil {
-		return nil, err
-	}
-
+	json.Unmarshal(data, &config)
 	return &config, nil
 }
 
-// UpdateAggregationConfig updates aggregation parameters
 func (c *VPSAContract) UpdateAggregationConfig(ctx contractapi.TransactionContextInterface,
-	minClients int, sourceWeight float64, targetWeight float64, alignmentWeight float64) error {
+	minClients int, sourceWeight, targetWeight, alignmentWeight float64) error {
 
-	config, err := c.GetAggregationConfig(ctx)
-	if err != nil {
-		return err
-	}
-
-	timestamp, err := getTxTimestamp(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get transaction timestamp: %v", err)
-	}
+	config, _ := c.GetAggregationConfig(ctx)
+	timestamp, _ := getTxTimestamp(ctx)
 
 	config.MinClients = minClients
 	config.SourceWeight = sourceWeight
@@ -534,95 +797,61 @@ func (c *VPSAContract) UpdateAggregationConfig(ctx contractapi.TransactionContex
 	config.AlignmentWeight = alignmentWeight
 	config.LastUpdated = timestamp
 
-	configJSON, err := json.Marshal(config)
-	if err != nil {
-		return err
-	}
-
+	configJSON, _ := json.Marshal(config)
 	return ctx.GetStub().PutState("vpsa-config", configJSON)
 }
 
-// GetTrainingMetrics retrieves metrics for a specific round
-func (c *VPSAContract) GetTrainingMetrics(ctx contractapi.TransactionContextInterface,
-	round int) (*TrainingMetrics, error) {
-
-	metricID := fmt.Sprintf("metrics-round-%d", round)
-	metricsJSON, err := ctx.GetStub().GetState(metricID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to read metrics: %v", err)
+func (c *VPSAContract) GetTrainingMetrics(ctx contractapi.TransactionContextInterface, round int) (*TrainingMetrics, error) {
+	data, _ := ctx.GetStub().GetState(fmt.Sprintf("metrics-round-%d", round))
+	if data == nil {
+		return nil, fmt.Errorf("metrics not found")
 	}
-	if metricsJSON == nil {
-		return nil, fmt.Errorf("metrics for round %d do not exist", round)
-	}
-
 	var metrics TrainingMetrics
-	err = json.Unmarshal(metricsJSON, &metrics)
-	if err != nil {
-		return nil, err
-	}
-
+	json.Unmarshal(data, &metrics)
 	return &metrics, nil
 }
 
-// GetAllTrainingMetrics retrieves all training metrics
 func (c *VPSAContract) GetAllTrainingMetrics(ctx contractapi.TransactionContextInterface) ([]*TrainingMetrics, error) {
-	config, err := c.GetAggregationConfig(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	var allMetrics []*TrainingMetrics
+	config, _ := c.GetAggregationConfig(ctx)
+	var all []*TrainingMetrics
 	for i := 0; i < config.CurrentRound; i++ {
-		metrics, err := c.GetTrainingMetrics(ctx, i)
-		if err == nil {
-			allMetrics = append(allMetrics, metrics)
+		if m, err := c.GetTrainingMetrics(ctx, i); err == nil {
+			all = append(all, m)
 		}
 	}
-
-	return allMetrics, nil
+	return all, nil
 }
 
-// GetModelHistory retrieves the complete history of a model
-func (c *VPSAContract) GetModelHistory(ctx contractapi.TransactionContextInterface,
-	modelID string) ([]map[string]interface{}, error) {
-
-	resultsIterator, err := ctx.GetStub().GetHistoryForKey(modelID)
+func (c *VPSAContract) GetModelHistory(ctx contractapi.TransactionContextInterface, modelID string) ([]map[string]interface{}, error) {
+	iter, err := ctx.GetStub().GetHistoryForKey(modelID)
 	if err != nil {
 		return nil, err
 	}
-	defer resultsIterator.Close()
+	defer iter.Close()
 
 	var history []map[string]interface{}
-	for resultsIterator.HasNext() {
-		response, err := resultsIterator.Next()
-		if err != nil {
-			return nil, err
-		}
-
+	for iter.HasNext() {
+		resp, _ := iter.Next()
 		var record map[string]interface{}
-		err = json.Unmarshal(response.Value, &record)
-		if err != nil {
-			return nil, err
-		}
-
-		record["txId"] = response.TxId
-		record["timestamp"] = response.Timestamp
-		record["isDelete"] = response.IsDelete
-
+		json.Unmarshal(resp.Value, &record)
+		record["txId"] = resp.TxId
+		record["timestamp"] = resp.Timestamp
 		history = append(history, record)
 	}
-
 	return history, nil
 }
+
+// ============================================================================
+// MAIN
+// ============================================================================
 
 func main() {
 	chaincode, err := contractapi.NewChaincode(&VPSAContract{})
 	if err != nil {
-		fmt.Printf("Error creating VPSA chaincode: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 		return
 	}
-
 	if err := chaincode.Start(); err != nil {
-		fmt.Printf("Error starting VPSA chaincode: %v\n", err)
+		fmt.Printf("Error: %v\n", err)
 	}
 }
