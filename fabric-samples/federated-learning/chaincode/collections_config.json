@@ -1,0 +1,20 @@
+[
+  {
+    "name": "collectionOrg1Private",
+    "policy": "OR('Org1MSP.peer')",
+    "requiredPeerCount": 1,
+    "maxPeerCount": 1,
+    "blockToLive": 0,
+    "memberOnlyRead": true,
+    "memberOnlyWrite": true
+  },
+  {
+    "name": "collectionOrg2Private",
+    "policy": "OR('Org2MSP.peer')",
+    "requiredPeerCount": 1,
+    "maxPeerCount": 1,
+    "blockToLive": 0,
+    "memberOnlyRead": true,
+    "memberOnlyWrite": true
+  }
+]
