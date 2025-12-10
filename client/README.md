@@ -1,8 +1,35 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Federated Learning with ZKP & Blockchain - Frontend
 
-## Getting Started
+A Next.js application for privacy-preserving federated learning with in-browser model training, blockchain integration via Hyperledger Fabric, and secure multi-party computation.
 
-First, run the development server:
+## 🚀 Features
+
+- **In-Browser Training**: Train machine learning models directly in the browser using TensorFlow.js
+- **Privacy-Preserving**: Model weights are split into private collections before submission
+- **Blockchain Integration**: All operations recorded on Hyperledger Fabric for transparency
+- **Secure Prediction**: Make predictions using secret sharing and MPC
+- **VPSA Aggregation**: Verifiable Privacy-preserving Secure Aggregation with coordinate-wise trimming
+
+## 📋 Prerequisites
+
+1. **Flask Backend Running**: The backend API must be running at `http://localhost:5000`
+   - Navigate to: `/home/amalendumanoj/project/Federated-Learning-with-zkp-and-blockchain/fabric-samples/federated-learning/flask-backend`
+   - Run: `python app.py`
+
+2. **Hyperledger Fabric Network**: The Fabric network must be up and running
+   - Navigate to: `/home/amalendumanoj/project/Federated-Learning-with-zkp-and-blockchain/fabric-samples/test-network`
+   - Ensure network is started with VPSA chaincode deployed
+
+3. **Node.js**: Version 18+ recommended
+
+## 🛠️ Installation
+
+1. **Install dependencies**:
+```bash
+npm install
+```
+
+2. **Run the development server**:
 
 ```bash
 npm run dev

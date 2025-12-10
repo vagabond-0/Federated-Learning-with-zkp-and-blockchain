@@ -1002,10 +1002,6 @@ func (s *VPSAContract) GetPrediction(ctx contractapi.TransactionContextInterface
 	return string(resultBytes), nil
 }
 
-// ...existing code...
-
-// ---------- main ----------
-
 func main() {
 	chaincode, err := contractapi.NewChaincode(&VPSAContract{})
 	if err != nil {

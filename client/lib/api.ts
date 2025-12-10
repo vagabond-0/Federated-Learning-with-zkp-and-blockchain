@@ -1,162 +1,316 @@
-const API_BASE = "http://localhost:5000";
+const API_BASE_URL = process.env.NEXT_PUBLIC_FLASK_API_BASE_URL || 'http://localhost:5000';
 
-export interface Client {
+/**
+ * API response types
+ */
+export interface ApiResponse {
+  message?: string;
+  error?: string;
+  [key: string]: any;
+}
+
+export interface ModelSubmitRequest {
+  modelID: string;
   clientID: string;
-  domain: string;
+  domain: 'source' | 'target';
+  parts: {
+    collectionOrg1Private: number[];
+    collectionOrg2Private: number[];
+  };
+  meta?: {
+    accuracy?: number;
+    epochs?: number;
+    timestamp?: string;
+    [key: string]: any;
+  };
+}
+
+export interface PredictionRequest {
+  queryID: string;
+  queryVector: number[];
+}
+
+export interface ClientRegisterRequest {
+  clientID: string;
+  domain: 'source' | 'target';
   datasetSize: number;
-  registrationTime: string;
-  isActive: boolean;
-  roundsParticipated: number;
 }
 
-export interface LocalModel {
-  modelID: string;
-  clientID: string;
-  weights: string;
-  latentFeatures: string;
-  prototypes: string;
-  accuracy: number;
-  loss: number;
-  alignmentLoss: number;
-  dataSize: number;
+export interface AggregationRequest {
+  modelClientPairs: string[]; // Format: ["modelID::clientID", ...]
+  beta?: number; // 0 or 1
+}
+
+/**
+ * Register a new client
+ */
+export async function registerClient(
+  clientID: string,
+  domain: 'source' | 'target',
+  datasetSize: number
+): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/client/register`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      clientID,
+      domain,
+      datasetSize,
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to register client');
+  }
+
+  return response.json();
+}
+
+/**
+ * Check if client exists
+ */
+export async function checkClientExists(clientID: string): Promise<boolean> {
+  const response = await fetch(`${API_BASE_URL}/api/client/${clientID}/exists`);
+  const data = await response.json();
+  return data.exists;
+}
+
+/**
+ * Get client details
+ */
+export async function getClient(clientID: string): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/client/${clientID}`);
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to get client');
+  }
+  
+  return response.json();
+}
+
+/**
+ * Submit local model with private data partitions
+ */
+export async function submitModel(request: ModelSubmitRequest): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/model/submit`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to submit model');
+  }
+
+  return response.json();
+}
+
+/**
+ * Aggregate models using VPSA
+ */
+export async function aggregateModelsVPSA(request: AggregationRequest): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/aggregate/vpsa`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to aggregate models');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get global model
+ */
+export async function getGlobalModel(): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/global-model`);
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to get global model');
+  }
+  
+  return response.json();
+}
+
+/**
+ * Get model dimensions
+ */
+export async function getModelDimensions(): Promise<{
+  dimensions: number;
+  modelVersion: number;
   round: number;
-  timestamp: string;
+}> {
+  const response = await fetch(`${API_BASE_URL}/api/model/dimensions`);
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to get model dimensions');
+  }
+  
+  return response.json();
 }
 
-export interface GlobalModel {
-  modelID: string;
-  aggregatedWeights: string;
-  aggregatedPrototypes: string;
-  globalAccuracy: number;
-  globalLoss: number;
-  alignmentScore: number;
-  round: number;
-  contributingClients: string[];
-  timestamp: string;
-}
-
-export interface TrainingMetrics {
-  round: number;
-  globalAccuracy: number;
-  globalLoss: number;
-  alignmentScore: number;
-  sourceAccuracy: number;
-  targetAccuracy: number;
-  numClients: number;
-  timestamp: string;
-}
-
-export interface AggregationConfig {
-  minClientsPerRound: number;
-  sourceWeight: number;
-  targetWeight: number;
-  alignmentWeight: number;
-}
-
-// Health check
-export async function checkHealth() {
-  const res = await fetch(`${API_BASE}/health`);
-  return res.json();
-}
-
-// Client operations
-export async function registerClient(clientID: string, domain: string, datasetSize: number) {
-  const res = await fetch(`${API_BASE}/api/client/register`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ clientID, domain, datasetSize }),
+/**
+ * Complete secure prediction workflow
+ */
+export async function completeSecurePrediction(request: PredictionRequest): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/prediction/complete`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
   });
-  return res.json();
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to complete prediction');
+  }
+
+  return response.json();
 }
 
-export async function getClient(clientID: string): Promise<Client> {
-  const res = await fetch(`${API_BASE}/api/client/${clientID}`);
-  return res.json();
-}
-
-export async function getAllClients(): Promise<Client[]> {
-  const res = await fetch(`${API_BASE}/api/clients`);
-  return res.json();
-}
-
-// Model operations
-export async function submitLocalModel(model: {
-  modelID: string;
-  clientID: string;
-  weights: object;
-  latentFeatures: object;
-  prototypes: object;
-  accuracy: number;
-  loss: number;
-  alignmentLoss: number;
-  dataSize: number;
-}) {
-  const res = await fetch(`${API_BASE}/api/model/submit`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(model),
+/**
+ * Setup secure prediction (split query)
+ */
+export async function setupSecurePrediction(request: PredictionRequest): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/prediction/setup`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(request),
   });
-  return res.json();
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to setup prediction');
+  }
+
+  return response.json();
 }
 
-export async function getLocalModel(modelID: string): Promise<LocalModel> {
-  const res = await fetch(`${API_BASE}/api/model/${modelID}`);
-  return res.json();
-}
-
-export async function getModelsByRound(round: number): Promise<LocalModel[]> {
-  const res = await fetch(`${API_BASE}/api/models/round/${round}`);
-  return res.json();
-}
-
-// Aggregation
-export async function aggregateModels(
-  modelIDs: string[],
-  sourceWeight = 0.6,
-  targetWeight = 0.4,
-  alignmentWeight = 0.1
-) {
-  const res = await fetch(`${API_BASE}/api/aggregate`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ modelIDs, sourceWeight, targetWeight, alignmentWeight }),
+/**
+ * Compute partial prediction
+ */
+export async function computePartialPrediction(queryID: string): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/prediction/compute/${queryID}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
   });
-  return res.json();
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to compute partial prediction');
+  }
+
+  return response.json();
 }
 
-// Global model
-export async function getGlobalModel(): Promise<GlobalModel> {
-  const res = await fetch(`${API_BASE}/api/global-model`);
-  return res.json();
-}
-
-export async function getGlobalModelHistory(): Promise<GlobalModel[]> {
-  const res = await fetch(`${API_BASE}/api/global-model/history`);
-  return res.json();
-}
-
-// Metrics
-export async function getMetrics(round: number): Promise<TrainingMetrics> {
-  const res = await fetch(`${API_BASE}/api/metrics/${round}`);
-  return res.json();
-}
-
-export async function getAllMetrics(): Promise<TrainingMetrics[]> {
-  const res = await fetch(`${API_BASE}/api/metrics`);
-  return res.json();
-}
-
-// Config
-export async function getConfig(): Promise<AggregationConfig> {
-  const res = await fetch(`${API_BASE}/api/config`);
-  return res.json();
-}
-
-export async function updateConfig(config: AggregationConfig) {
-  const res = await fetch(`${API_BASE}/api/config/update`, {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(config),
+/**
+ * Reconstruct final prediction
+ */
+export async function reconstructPrediction(queryID: string): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/prediction/reconstruct/${queryID}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
   });
-  return res.json();
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to reconstruct prediction');
+  }
+
+  return response.json();
+}
+
+/**
+ * Get final prediction result
+ */
+export async function getPrediction(queryID: string): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/prediction/${queryID}`);
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to get prediction');
+  }
+  
+  return response.json();
+}
+
+/**
+ * Get aggregation configuration
+ */
+export async function getConfig(): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/config`);
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to get config');
+  }
+  
+  return response.json();
+}
+
+/**
+ * Get current training round
+ */
+export async function getCurrentRound(): Promise<{
+  currentRound: number;
+  beta: number;
+  collections: string[];
+}> {
+  const response = await fetch(`${API_BASE_URL}/api/round/current`);
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to get current round');
+  }
+  
+  return response.json();
+}
+
+/**
+ * Get system statistics
+ */
+export async function getSystemStats(): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/api/stats`);
+  
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to get system stats');
+  }
+  
+  return response.json();
+}
+
+/**
+ * Health check
+ */
+export async function healthCheck(): Promise<ApiResponse> {
+  const response = await fetch(`${API_BASE_URL}/health`);
+  
+  if (!response.ok) {
+    throw new Error('Health check failed');
+  }
+  
+  return response.json();
 }
