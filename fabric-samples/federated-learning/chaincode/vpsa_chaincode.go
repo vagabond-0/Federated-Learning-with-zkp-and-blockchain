@@ -811,6 +811,194 @@ func (c *VPSAContract) SecurePredictReconstruct(ctx contractapi.TransactionConte
 	return result, nil
 }
 
+// ...existing code...
+
+// ComputePartialPrediction computes a partial prediction using the query share in this org's collection
+// and the global model weights. Stores the partial logits in private collection.
+// transient must contain "queryID"
+func (s *VPSAContract) ComputePartialPrediction(ctx contractapi.TransactionContextInterface) error {
+	// Get query ID from transient
+	transientMap, err := ctx.GetStub().GetTransient()
+	if err != nil {
+		return fmt.Errorf("error getting transient: %v", err)
+	}
+
+	queryIDBytes, ok := transientMap["queryID"]
+	if !ok {
+		return errors.New("queryID not found in transient map")
+	}
+	queryID := string(queryIDBytes)
+
+	// Get aggregation config to know collections
+	cfgBytes, err := ctx.GetStub().GetState("aggregation-config")
+	if err != nil {
+		return fmt.Errorf("failed to read config: %v", err)
+	}
+	var cfg AggregationConfig
+	if err := json.Unmarshal(cfgBytes, &cfg); err != nil {
+		return err
+	}
+
+	// Get global model
+	gmBytes, err := ctx.GetStub().GetState("global-model")
+	if err != nil {
+		return fmt.Errorf("failed to read global model: %v", err)
+	}
+	var gm GlobalModel
+	if err := json.Unmarshal(gmBytes, &gm); err != nil {
+		return err
+	}
+
+	if len(gm.Weights) == 0 {
+		return errors.New("global model has no weights")
+	}
+
+	// Parse global model weights from JSON string
+	var weights []float64
+	if err := json.Unmarshal([]byte(gm.Weights), &weights); err != nil {
+		return fmt.Errorf("failed to parse global model weights: %v", err)
+	}
+
+	// Get client MSP ID to determine which collection to use
+	clientMSPID, err := ctx.GetClientIdentity().GetMSPID()
+	if err != nil {
+		return fmt.Errorf("failed to get client MSP ID: %v", err)
+	}
+
+	// Determine collection based on MSP
+	var myCollection string
+	if clientMSPID == "Org1MSP" {
+		myCollection = "collectionOrg1Private"
+	} else if clientMSPID == "Org2MSP" {
+		myCollection = "collectionOrg2Private"
+	} else {
+		return fmt.Errorf("unknown MSP ID: %s", clientMSPID)
+	}
+
+	// Read query share from private collection
+	shareKey := fmt.Sprintf("query::%s::share", queryID)
+	shareBytes, err := ctx.GetStub().GetPrivateData(myCollection, shareKey)
+	if err != nil {
+		return fmt.Errorf("failed to read query share: %v", err)
+	}
+	if shareBytes == nil {
+		return fmt.Errorf("query share not found for queryID: %s", queryID)
+	}
+
+	var queryShare []float64
+	if err := json.Unmarshal(shareBytes, &queryShare); err != nil {
+		return err
+	}
+	partialLogit := 0.0
+	for i := 0; i < len(queryShare); i++ {
+		partialLogit += queryShare[i] * weights[i]
+	}
+
+	// Store partial logit in private collection
+	logitKey := fmt.Sprintf("query::%s::logit", queryID)
+	logitBytes, err := json.Marshal(partialLogit)
+	if err != nil {
+		return err
+	}
+
+	if err := ctx.GetStub().PutPrivateData(myCollection, logitKey, logitBytes); err != nil {
+		return fmt.Errorf("failed to store partial logit: %v", err)
+	}
+
+	return nil
+}
+
+// ReconstructPrediction reconstructs the final prediction by summing partial logits from all collections
+// transient must contain "queryID"
+func (s *VPSAContract) ReconstructPrediction(ctx contractapi.TransactionContextInterface) error {
+	// Get query ID from transient
+	transientMap, err := ctx.GetStub().GetTransient()
+	if err != nil {
+		return fmt.Errorf("error getting transient: %v", err)
+	}
+
+	queryIDBytes, ok := transientMap["queryID"]
+	if !ok {
+		return errors.New("queryID not found in transient map")
+	}
+	queryID := string(queryIDBytes)
+
+	// Get aggregation config to know collections
+	cfgBytes, err := ctx.GetStub().GetState("aggregation-config")
+	if err != nil {
+		return fmt.Errorf("failed to read config: %v", err)
+	}
+	var cfg AggregationConfig
+	if err := json.Unmarshal(cfgBytes, &cfg); err != nil {
+		return err
+	}
+
+	// Gather partial logits from all collections
+	totalLogit := 0.0
+	logitKey := fmt.Sprintf("query::%s::logit", queryID)
+
+	for _, collName := range cfg.Collections {
+		logitBytes, err := ctx.GetStub().GetPrivateData(collName, logitKey)
+		if err != nil {
+			return fmt.Errorf("failed to read partial logit from %s: %v", collName, err)
+		}
+		if logitBytes == nil {
+			return fmt.Errorf("partial logit not found in collection %s for queryID: %s", collName, queryID)
+		}
+
+		var partialLogit float64
+		if err := json.Unmarshal(logitBytes, &partialLogit); err != nil {
+			return err
+		}
+
+		totalLogit += partialLogit
+	}
+
+	// Apply sigmoid activation for binary classification
+	finalPrediction := 1.0 / (1.0 + math.Exp(-totalLogit))
+
+	// Store result in public state
+	result := struct {
+		QueryID    string  `json:"queryID"`
+		Logit      float64 `json:"logit"`
+		Prediction float64 `json:"prediction"`
+		Timestamp  string  `json:"timestamp"`
+	}{
+		QueryID:    queryID,
+		Logit:      totalLogit,
+		Prediction: finalPrediction,
+		Timestamp:  time.Now().UTC().Format(time.RFC3339),
+	}
+
+	resultBytes, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+
+	resultKey := fmt.Sprintf("prediction::%s", queryID)
+	if err := ctx.GetStub().PutState(resultKey, resultBytes); err != nil {
+		return fmt.Errorf("failed to store prediction result: %v", err)
+	}
+
+	return nil
+}
+
+// GetPrediction retrieves a stored prediction result
+func (s *VPSAContract) GetPrediction(ctx contractapi.TransactionContextInterface, queryID string) (string, error) {
+	resultKey := fmt.Sprintf("prediction::%s", queryID)
+	resultBytes, err := ctx.GetStub().GetState(resultKey)
+	if err != nil {
+		return "", fmt.Errorf("failed to read prediction: %v", err)
+	}
+	if resultBytes == nil {
+		return "", fmt.Errorf("prediction not found for queryID: %s", queryID)
+	}
+
+	return string(resultBytes), nil
+}
+
+// ...existing code...
+
 // ---------- main ----------
 
 func main() {
