@@ -744,34 +744,33 @@ func (c *VPSAContract) SecurePredictSetup(ctx contractapi.TransactionContextInte
 		return fmt.Errorf("no collections configured")
 	}
 
-	// create additive shares such that sum(shares) = queryVec
-	// simple approach: shares[0..n-2] random small numbers, last share = query - sum
-	// In chaincode we cannot create secure randomness across orgs; clients normally create shares.
-	// We'll implement deterministic pseudo-splitting for demonstration:
+	// Create additive shares such that sum(shares) = queryVec
+	// Simple equal split for demonstration
 	shares := make([][]float64, n)
 	for i := 0; i < n; i++ {
 		shares[i] = make([]float64, len(queryVec))
 	}
-	// first n-1 shares: take fractional portions
+
+	// Split equally across n shares
 	for i := 0; i < len(queryVec); i++ {
 		val := queryVec[i]
-		portion := val / float64(n) // equal split
+		portion := val / float64(n)
 		for s := 0; s < n-1; s++ {
 			shares[s][i] = portion
 		}
 		shares[n-1][i] = val - portion*float64(n-1)
 	}
 
-	// store shares into private collections with key "query::<queryID>::share::<i>"
+	// Store shares into private collections WITHOUT index suffix
+	// Key format: "query::<queryID>::share"
 	for i, coll := range cfg.Collections {
-		key := fmt.Sprintf("query::%s::share::%d", queryID, i)
+		key := fmt.Sprintf("query::%s::share", queryID)
 		b, _ := json.Marshal(shares[i])
 		if err := ctx.GetStub().PutPrivateData(coll, key, b); err != nil {
-			return fmt.Errorf("put private share failed: %v", err)
+			return fmt.Errorf("put private share failed for %s: %v", coll, err)
 		}
 	}
 
-	// client/peers will then perform local inference on their share and return logits into another private key
 	return nil
 }
 
@@ -827,10 +826,10 @@ func (s *VPSAContract) ComputePartialPrediction(ctx contractapi.TransactionConte
 	if !ok {
 		return errors.New("queryID not found in transient map")
 	}
-	queryID := string(queryIDBytes)
+	queryID := strings.TrimSpace(string(queryIDBytes))
 
-	// Get aggregation config to know collections
-	cfgBytes, err := ctx.GetStub().GetState("aggregation-config")
+	// Get aggregation config
+	cfgBytes, err := ctx.GetStub().GetState("vpsa-config")
 	if err != nil {
 		return fmt.Errorf("failed to read config: %v", err)
 	}
@@ -840,7 +839,7 @@ func (s *VPSAContract) ComputePartialPrediction(ctx contractapi.TransactionConte
 	}
 
 	// Get global model
-	gmBytes, err := ctx.GetStub().GetState("global-model")
+	gmBytes, err := ctx.GetStub().GetState("vpsa-global-model")
 	if err != nil {
 		return fmt.Errorf("failed to read global model: %v", err)
 	}
@@ -849,14 +848,14 @@ func (s *VPSAContract) ComputePartialPrediction(ctx contractapi.TransactionConte
 		return err
 	}
 
-	if len(gm.Weights) == 0 {
-		return errors.New("global model has no weights")
-	}
-
-	// Parse global model weights from JSON string
+	// Parse global model weights
 	var weights []float64
 	if err := json.Unmarshal([]byte(gm.Weights), &weights); err != nil {
 		return fmt.Errorf("failed to parse global model weights: %v", err)
+	}
+
+	if len(weights) == 0 {
+		return errors.New("global model has no weights")
 	}
 
 	// Get client MSP ID to determine which collection to use
@@ -875,20 +874,27 @@ func (s *VPSAContract) ComputePartialPrediction(ctx contractapi.TransactionConte
 		return fmt.Errorf("unknown MSP ID: %s", clientMSPID)
 	}
 
-	// Read query share from private collection
+	// Read query share from private collection (key matches what SecurePredictSetup stored)
 	shareKey := fmt.Sprintf("query::%s::share", queryID)
 	shareBytes, err := ctx.GetStub().GetPrivateData(myCollection, shareKey)
 	if err != nil {
-		return fmt.Errorf("failed to read query share: %v", err)
+		return fmt.Errorf("failed to read query share from %s: %v", myCollection, err)
 	}
 	if shareBytes == nil {
-		return fmt.Errorf("query share not found for queryID: %s", queryID)
+		return fmt.Errorf("query share not found in %s for queryID: %s", myCollection, queryID)
 	}
 
 	var queryShare []float64
 	if err := json.Unmarshal(shareBytes, &queryShare); err != nil {
-		return err
+		return fmt.Errorf("failed to unmarshal query share: %v", err)
 	}
+
+	// Ensure dimensions match
+	if len(queryShare) != len(weights) {
+		return fmt.Errorf("dimension mismatch: query share has %d elements, model has %d weights", len(queryShare), len(weights))
+	}
+
+	// Compute partial prediction: dot product
 	partialLogit := 0.0
 	for i := 0; i < len(queryShare); i++ {
 		partialLogit += queryShare[i] * weights[i]
@@ -908,8 +914,7 @@ func (s *VPSAContract) ComputePartialPrediction(ctx contractapi.TransactionConte
 	return nil
 }
 
-// ReconstructPrediction reconstructs the final prediction by summing partial logits from all collections
-// transient must contain "queryID"
+// ReconstructPrediction - Same as before
 func (s *VPSAContract) ReconstructPrediction(ctx contractapi.TransactionContextInterface) error {
 	// Get query ID from transient
 	transientMap, err := ctx.GetStub().GetTransient()
@@ -921,10 +926,10 @@ func (s *VPSAContract) ReconstructPrediction(ctx contractapi.TransactionContextI
 	if !ok {
 		return errors.New("queryID not found in transient map")
 	}
-	queryID := string(queryIDBytes)
+	queryID := strings.TrimSpace(string(queryIDBytes))
 
-	// Get aggregation config to know collections
-	cfgBytes, err := ctx.GetStub().GetState("aggregation-config")
+	// Get aggregation config
+	cfgBytes, err := ctx.GetStub().GetState("vpsa-config")
 	if err != nil {
 		return fmt.Errorf("failed to read config: %v", err)
 	}
