@@ -13,77 +13,107 @@ type VPSAContract struct {
 	contractapi.Contract
 }
 
+// NumClasses defines the number of classes for MNIST (digits 0-9)
+const NumClasses = 10
+
 // Client represents a participating client/peer in federated learning
 type Client struct {
-	ClientID      string  `json:"clientID"`
-	Domain        string  `json:"domain"`
-	IsActive      bool    `json:"isActive"`
-	LastUpdate    string  `json:"lastUpdate"`
-	DatasetSize   int     `json:"datasetSize"`
-	ModelAccuracy float64 `json:"modelAccuracy"`
-	DocType       string  `json:"docType"`
+	ClientID          string             `json:"clientID"`
+	Domain            string             `json:"domain"`
+	IsActive          bool               `json:"isActive"`
+	LastUpdate        string             `json:"lastUpdate"`
+	DatasetSize       int                `json:"datasetSize"`
+	ModelAccuracy     float64            `json:"modelAccuracy"`
+	ClassAccuracies   map[string]float64 `json:"classAccuracies"`   // Per-class accuracy for MNIST
+	ClassDistribution map[string]int     `json:"classDistribution"` // Samples per class
+	DocType           string             `json:"docType"`
 }
 
 // LocalModel represents a client's locally trained model
 type LocalModel struct {
-	ModelID        string  `json:"modelID"`
-	ClientID       string  `json:"clientID"`
-	Round          int     `json:"round"`
-	Domain         string  `json:"domain"`
-	Weights        string  `json:"weights"`
-	LatentFeatures string  `json:"latentFeatures"`
-	Prototypes     string  `json:"prototypes"`
-	Accuracy       float64 `json:"accuracy"`
-	Loss           float64 `json:"loss"`
-	AlignmentLoss  float64 `json:"alignmentLoss"`
-	DataSize       int     `json:"dataSize"`
-	Timestamp      string  `json:"timestamp"`
-	Status         string  `json:"status"`
-	DocType        string  `json:"docType"` // Added for type identification
+	ModelID         string             `json:"modelID"`
+	ClientID        string             `json:"clientID"`
+	Round           int                `json:"round"`
+	Domain          string             `json:"domain"`
+	Weights         string             `json:"weights"`
+	LatentFeatures  string             `json:"latentFeatures"`
+	Prototypes      string             `json:"prototypes"`      // Per-class prototypes for all 10 classes
+	ClassPrototypes map[string]string  `json:"classPrototypes"` // Prototypes indexed by class label
+	Accuracy        float64            `json:"accuracy"`
+	Loss            float64            `json:"loss"`
+	AlignmentLoss   float64            `json:"alignmentLoss"`
+	ClassAccuracies map[string]float64 `json:"classAccuracies"` // Per-class accuracy
+	ClassLosses     map[string]float64 `json:"classLosses"`     // Per-class loss
+	ConfusionMatrix string             `json:"confusionMatrix"` // 10x10 confusion matrix as JSON
+	DataSize        int                `json:"dataSize"`
+	Timestamp       string             `json:"timestamp"`
+	Status          string             `json:"status"`
+	DocType         string             `json:"docType"`
 }
 
 // GlobalModel represents the aggregated global model
 type GlobalModel struct {
-	ModelID          string  `json:"modelID"`
-	Version          int     `json:"version"`
-	Round            int     `json:"round"`
-	Weights          string  `json:"weights"`
-	GlobalPrototypes string  `json:"globalPrototypes"`
-	LatentDim        int     `json:"latentDim"`
-	NumLatents       int     `json:"numLatents"`
-	Accuracy         float64 `json:"accuracy"`
-	Loss             float64 `json:"loss"`
-	NumClients       int     `json:"numClients"`
-	SourceClients    int     `json:"sourceClients"`
-	TargetClients    int     `json:"targetClients"`
-	Timestamp        string  `json:"timestamp"`
-	Status           string  `json:"status"`
+	ModelID          string             `json:"modelID"`
+	Version          int                `json:"version"`
+	Round            int                `json:"round"`
+	Weights          string             `json:"weights"`
+	GlobalPrototypes string             `json:"globalPrototypes"`
+	ClassPrototypes  map[string]string  `json:"classPrototypes"` // Global prototypes per class
+	LatentDim        int                `json:"latentDim"`
+	NumLatents       int                `json:"numLatents"`
+	NumClasses       int                `json:"numClasses"` // Number of classes (10 for MNIST)
+	Accuracy         float64            `json:"accuracy"`
+	Loss             float64            `json:"loss"`
+	ClassAccuracies  map[string]float64 `json:"classAccuracies"` // Per-class accuracy
+	ConfusionMatrix  string             `json:"confusionMatrix"` // Aggregated confusion matrix
+	NumClients       int                `json:"numClients"`
+	SourceClients    int                `json:"sourceClients"`
+	TargetClients    int                `json:"targetClients"`
+	Timestamp        string             `json:"timestamp"`
+	Status           string             `json:"status"`
 }
 
 // AggregationConfig stores configuration for model aggregation
 type AggregationConfig struct {
-	ConfigID             string  `json:"configID"`
-	MinClients           int     `json:"minClients"`
-	MaxRounds            int     `json:"maxRounds"`
-	SourceWeight         float64 `json:"sourceWeight"`
-	TargetWeight         float64 `json:"targetWeight"`
-	AlignmentWeight      float64 `json:"alignmentWeight"`
-	ConvergenceThreshold float64 `json:"convergenceThreshold"`
-	CurrentRound         int     `json:"currentRound"`
-	LastUpdated          string  `json:"lastUpdated"`
+	ConfigID             string   `json:"configID"`
+	MinClients           int      `json:"minClients"`
+	MaxRounds            int      `json:"maxRounds"`
+	NumClasses           int      `json:"numClasses"`  // Number of classes
+	ClassLabels          []string `json:"classLabels"` // Class label names
+	SourceWeight         float64  `json:"sourceWeight"`
+	TargetWeight         float64  `json:"targetWeight"`
+	AlignmentWeight      float64  `json:"alignmentWeight"`
+	ConvergenceThreshold float64  `json:"convergenceThreshold"`
+	CurrentRound         int      `json:"currentRound"`
+	LastUpdated          string   `json:"lastUpdated"`
 }
 
 // TrainingMetrics stores per-round training metrics
 type TrainingMetrics struct {
-	MetricID        string  `json:"metricID"`
-	Round           int     `json:"round"`
-	GlobalAccuracy  float64 `json:"globalAccuracy"`
-	GlobalLoss      float64 `json:"globalLoss"`
-	SourceAccuracy  float64 `json:"sourceAccuracy"`
-	TargetAccuracy  float64 `json:"targetAccuracy"`
-	AlignmentScore  float64 `json:"alignmentScore"`
-	NumParticipants int     `json:"numParticipants"`
-	Timestamp       string  `json:"timestamp"`
+	MetricID        string             `json:"metricID"`
+	Round           int                `json:"round"`
+	GlobalAccuracy  float64            `json:"globalAccuracy"`
+	GlobalLoss      float64            `json:"globalLoss"`
+	SourceAccuracy  float64            `json:"sourceAccuracy"`
+	TargetAccuracy  float64            `json:"targetAccuracy"`
+	ClassAccuracies map[string]float64 `json:"classAccuracies"` // Per-class accuracy
+	ClassF1Scores   map[string]float64 `json:"classF1Scores"`   // Per-class F1 score
+	ConfusionMatrix string             `json:"confusionMatrix"` // Confusion matrix
+	AlignmentScore  float64            `json:"alignmentScore"`
+	NumParticipants int                `json:"numParticipants"`
+	Timestamp       string             `json:"timestamp"`
+}
+
+// ClassMetrics stores detailed metrics for a single class
+type ClassMetrics struct {
+	ClassID   string  `json:"classID"`
+	Round     int     `json:"round"`
+	Accuracy  float64 `json:"accuracy"`
+	Precision float64 `json:"precision"`
+	Recall    float64 `json:"recall"`
+	F1Score   float64 `json:"f1Score"`
+	Support   int     `json:"support"` // Number of samples
+	Timestamp string  `json:"timestamp"`
 }
 
 // getTxTimestamp retrieves the transaction timestamp
@@ -95,11 +125,20 @@ func getTxTimestamp(ctx contractapi.TransactionContextInterface) (string, error)
 	return time.Unix(txTimestamp.Seconds, int64(txTimestamp.Nanos)).UTC().Format(time.RFC3339Nano), nil
 }
 
-// InitLedger initializes the chaincode
+// InitLedger initializes the chaincode with MNIST multi-class configuration
 func (c *VPSAContract) InitLedger(ctx contractapi.TransactionContextInterface) error {
 	timestamp, err := getTxTimestamp(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get transaction timestamp: %v", err)
+	}
+
+	// Initialize per-class accuracies for MNIST (classes 0-9)
+	classAccuracies := make(map[string]float64)
+	classPrototypes := make(map[string]string)
+	for i := 0; i < NumClasses; i++ {
+		classLabel := fmt.Sprintf("%d", i)
+		classAccuracies[classLabel] = 0.0
+		classPrototypes[classLabel] = "{}"
 	}
 
 	globalModel := GlobalModel{
@@ -108,10 +147,14 @@ func (c *VPSAContract) InitLedger(ctx contractapi.TransactionContextInterface) e
 		Round:            0,
 		Weights:          "{}",
 		GlobalPrototypes: "{}",
+		ClassPrototypes:  classPrototypes,
 		LatentDim:        768,
 		NumLatents:       512,
+		NumClasses:       NumClasses,
 		Accuracy:         0.0,
 		Loss:             0.0,
+		ClassAccuracies:  classAccuracies,
+		ConfusionMatrix:  "[[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0],[0,0,0,0,0,0,0,0,0,0]]",
 		NumClients:       0,
 		SourceClients:    0,
 		TargetClients:    0,
@@ -129,10 +172,15 @@ func (c *VPSAContract) InitLedger(ctx contractapi.TransactionContextInterface) e
 		return err
 	}
 
+	// MNIST class labels (digits 0-9)
+	classLabels := []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9"}
+
 	config := AggregationConfig{
 		ConfigID:             "vpsa-config",
 		MinClients:           3,
 		MaxRounds:            100,
+		NumClasses:           NumClasses,
+		ClassLabels:          classLabels,
 		SourceWeight:         0.6,
 		TargetWeight:         0.4,
 		AlignmentWeight:      0.1,
@@ -158,9 +206,9 @@ func (c *VPSAContract) InitLedger(ctx contractapi.TransactionContextInterface) e
 	return ctx.GetStub().PutState("client-list", clientListJSON)
 }
 
-// RegisterClient registers a new client
+// RegisterClient registers a new client with class distribution info
 func (c *VPSAContract) RegisterClient(ctx contractapi.TransactionContextInterface,
-	clientID string, domain string, datasetSize int) error {
+	clientID string, domain string, datasetSize int, classDistributionJSON string) error {
 
 	exists, err := c.ClientExists(ctx, clientID)
 	if err != nil {
@@ -175,14 +223,42 @@ func (c *VPSAContract) RegisterClient(ctx contractapi.TransactionContextInterfac
 		return fmt.Errorf("failed to get transaction timestamp: %v", err)
 	}
 
+	// Parse class distribution (samples per MNIST class)
+	var classDistribution map[string]int
+	if classDistributionJSON != "" {
+		err = json.Unmarshal([]byte(classDistributionJSON), &classDistribution)
+		if err != nil {
+			// Default equal distribution
+			classDistribution = make(map[string]int)
+			perClass := datasetSize / NumClasses
+			for i := 0; i < NumClasses; i++ {
+				classDistribution[fmt.Sprintf("%d", i)] = perClass
+			}
+		}
+	} else {
+		classDistribution = make(map[string]int)
+		perClass := datasetSize / NumClasses
+		for i := 0; i < NumClasses; i++ {
+			classDistribution[fmt.Sprintf("%d", i)] = perClass
+		}
+	}
+
+	// Initialize per-class accuracies
+	classAccuracies := make(map[string]float64)
+	for i := 0; i < NumClasses; i++ {
+		classAccuracies[fmt.Sprintf("%d", i)] = 0.0
+	}
+
 	client := Client{
-		ClientID:      clientID,
-		Domain:        domain,
-		IsActive:      true,
-		LastUpdate:    timestamp,
-		DatasetSize:   datasetSize,
-		ModelAccuracy: 0.0,
-		DocType:       "client",
+		ClientID:          clientID,
+		Domain:            domain,
+		IsActive:          true,
+		LastUpdate:        timestamp,
+		DatasetSize:       datasetSize,
+		ModelAccuracy:     0.0,
+		ClassAccuracies:   classAccuracies,
+		ClassDistribution: classDistribution,
+		DocType:           "client",
 	}
 
 	clientJSON, err := json.Marshal(client)
@@ -263,11 +339,12 @@ func (c *VPSAContract) GetAllClients(ctx contractapi.TransactionContextInterface
 	return clients, nil
 }
 
-// SubmitLocalModel allows a client to submit their locally trained model
+// SubmitLocalModel allows a client to submit their locally trained model with multi-class metrics
 func (c *VPSAContract) SubmitLocalModel(ctx contractapi.TransactionContextInterface,
 	modelID string, clientID string, weights string, latentFeatures string,
-	prototypes string, accuracy float64, loss float64, alignmentLoss float64,
-	dataSize int) error {
+	prototypes string, classPrototypesJSON string, accuracy float64, loss float64,
+	alignmentLoss float64, classAccuraciesJSON string, classLossesJSON string,
+	confusionMatrix string, dataSize int) error {
 
 	client, err := c.GetClient(ctx, clientID)
 	if err != nil {
@@ -288,21 +365,49 @@ func (c *VPSAContract) SubmitLocalModel(ctx contractapi.TransactionContextInterf
 		return fmt.Errorf("failed to get transaction timestamp: %v", err)
 	}
 
+	// Parse class-specific prototypes
+	var classPrototypes map[string]string
+	if classPrototypesJSON != "" {
+		json.Unmarshal([]byte(classPrototypesJSON), &classPrototypes)
+	} else {
+		classPrototypes = make(map[string]string)
+	}
+
+	// Parse class-specific accuracies
+	var classAccuracies map[string]float64
+	if classAccuraciesJSON != "" {
+		json.Unmarshal([]byte(classAccuraciesJSON), &classAccuracies)
+	} else {
+		classAccuracies = make(map[string]float64)
+	}
+
+	// Parse class-specific losses
+	var classLosses map[string]float64
+	if classLossesJSON != "" {
+		json.Unmarshal([]byte(classLossesJSON), &classLosses)
+	} else {
+		classLosses = make(map[string]float64)
+	}
+
 	localModel := LocalModel{
-		ModelID:        modelID,
-		ClientID:       clientID,
-		Round:          config.CurrentRound,
-		Domain:         client.Domain,
-		Weights:        weights,
-		LatentFeatures: latentFeatures,
-		Prototypes:     prototypes,
-		Accuracy:       accuracy,
-		Loss:           loss,
-		AlignmentLoss:  alignmentLoss,
-		DataSize:       dataSize,
-		Timestamp:      timestamp,
-		Status:         "submitted",
-		DocType:        "localModel",
+		ModelID:         modelID,
+		ClientID:        clientID,
+		Round:           config.CurrentRound,
+		Domain:          client.Domain,
+		Weights:         weights,
+		LatentFeatures:  latentFeatures,
+		Prototypes:      prototypes,
+		ClassPrototypes: classPrototypes,
+		Accuracy:        accuracy,
+		Loss:            loss,
+		AlignmentLoss:   alignmentLoss,
+		ClassAccuracies: classAccuracies,
+		ClassLosses:     classLosses,
+		ConfusionMatrix: confusionMatrix,
+		DataSize:        dataSize,
+		Timestamp:       timestamp,
+		Status:          "submitted",
+		DocType:         "localModel",
 	}
 
 	modelJSON, err := json.Marshal(localModel)
@@ -315,9 +420,10 @@ func (c *VPSAContract) SubmitLocalModel(ctx contractapi.TransactionContextInterf
 		return err
 	}
 
-	// Update client
+	// Update client with per-class accuracies
 	client.LastUpdate = timestamp
 	client.ModelAccuracy = accuracy
+	client.ClassAccuracies = classAccuracies
 	clientJSON, err := json.Marshal(client)
 	if err != nil {
 		return err
@@ -384,10 +490,11 @@ func (c *VPSAContract) GetLocalModelsByRound(ctx contractapi.TransactionContextI
 	return models, nil
 }
 
-// AggregateModels performs federated aggregation
+// AggregateModels performs federated aggregation with multi-class support
 func (c *VPSAContract) AggregateModels(ctx contractapi.TransactionContextInterface,
 	modelIDs []string, aggregatedWeights string, aggregatedPrototypes string,
-	globalAccuracy float64, globalLoss float64, alignmentScore float64) error {
+	classPrototypesJSON string, globalAccuracy float64, globalLoss float64,
+	classAccuraciesJSON string, confusionMatrix string, alignmentScore float64) error {
 
 	globalModel, err := c.GetGlobalModel(ctx)
 	if err != nil {
@@ -424,12 +531,31 @@ func (c *VPSAContract) AggregateModels(ctx contractapi.TransactionContextInterfa
 		ctx.GetStub().PutState(modelID, modelJSON)
 	}
 
+	// Parse class prototypes
+	var classPrototypes map[string]string
+	if classPrototypesJSON != "" {
+		json.Unmarshal([]byte(classPrototypesJSON), &classPrototypes)
+	} else {
+		classPrototypes = make(map[string]string)
+	}
+
+	// Parse class accuracies
+	var classAccuracies map[string]float64
+	if classAccuraciesJSON != "" {
+		json.Unmarshal([]byte(classAccuraciesJSON), &classAccuracies)
+	} else {
+		classAccuracies = make(map[string]float64)
+	}
+
 	globalModel.Version++
 	globalModel.Round = config.CurrentRound
 	globalModel.Weights = aggregatedWeights
 	globalModel.GlobalPrototypes = aggregatedPrototypes
+	globalModel.ClassPrototypes = classPrototypes
 	globalModel.Accuracy = globalAccuracy
 	globalModel.Loss = globalLoss
+	globalModel.ClassAccuracies = classAccuracies
+	globalModel.ConfusionMatrix = confusionMatrix
 	globalModel.NumClients = len(modelIDs)
 	globalModel.SourceClients = sourceCount
 	globalModel.TargetClients = targetCount
@@ -446,11 +572,20 @@ func (c *VPSAContract) AggregateModels(ctx contractapi.TransactionContextInterfa
 		return err
 	}
 
+	// Calculate per-class F1 scores (simplified - in real use, compute from confusion matrix)
+	classF1Scores := make(map[string]float64)
+	for classLabel, acc := range classAccuracies {
+		classF1Scores[classLabel] = acc // Simplified: using accuracy as proxy for F1
+	}
+
 	metrics := TrainingMetrics{
 		MetricID:        fmt.Sprintf("metrics-round-%d", config.CurrentRound),
 		Round:           config.CurrentRound,
 		GlobalAccuracy:  globalAccuracy,
 		GlobalLoss:      globalLoss,
+		ClassAccuracies: classAccuracies,
+		ClassF1Scores:   classF1Scores,
+		ConfusionMatrix: confusionMatrix,
 		AlignmentScore:  alignmentScore,
 		NumParticipants: len(modelIDs),
 		Timestamp:       timestamp,
@@ -613,6 +748,99 @@ func (c *VPSAContract) GetModelHistory(ctx contractapi.TransactionContextInterfa
 	}
 
 	return history, nil
+}
+
+// GetClassAccuracies retrieves per-class accuracies for a specific round
+func (c *VPSAContract) GetClassAccuracies(ctx contractapi.TransactionContextInterface,
+	round int) (map[string]float64, error) {
+
+	metrics, err := c.GetTrainingMetrics(ctx, round)
+	if err != nil {
+		return nil, err
+	}
+
+	return metrics.ClassAccuracies, nil
+}
+
+// GetClassPrototypes retrieves global class prototypes
+func (c *VPSAContract) GetClassPrototypes(ctx contractapi.TransactionContextInterface) (map[string]string, error) {
+	globalModel, err := c.GetGlobalModel(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return globalModel.ClassPrototypes, nil
+}
+
+// GetClassMetricsByRound retrieves detailed class metrics for a round
+func (c *VPSAContract) GetClassMetricsByRound(ctx contractapi.TransactionContextInterface,
+	round int, classLabel string) (*ClassMetrics, error) {
+
+	metrics, err := c.GetTrainingMetrics(ctx, round)
+	if err != nil {
+		return nil, err
+	}
+
+	accuracy, exists := metrics.ClassAccuracies[classLabel]
+	if !exists {
+		return nil, fmt.Errorf("class %s not found in round %d", classLabel, round)
+	}
+
+	f1Score, _ := metrics.ClassF1Scores[classLabel]
+
+	classMetrics := &ClassMetrics{
+		ClassID:   classLabel,
+		Round:     round,
+		Accuracy:  accuracy,
+		F1Score:   f1Score,
+		Timestamp: metrics.Timestamp,
+	}
+
+	return classMetrics, nil
+}
+
+// GetConfusionMatrix retrieves the confusion matrix for a specific round
+func (c *VPSAContract) GetConfusionMatrix(ctx contractapi.TransactionContextInterface,
+	round int) (string, error) {
+
+	metrics, err := c.GetTrainingMetrics(ctx, round)
+	if err != nil {
+		return "", err
+	}
+
+	return metrics.ConfusionMatrix, nil
+}
+
+// GetClientClassDistribution retrieves the class distribution for a client
+func (c *VPSAContract) GetClientClassDistribution(ctx contractapi.TransactionContextInterface,
+	clientID string) (map[string]int, error) {
+
+	client, err := c.GetClient(ctx, clientID)
+	if err != nil {
+		return nil, err
+	}
+
+	return client.ClassDistribution, nil
+}
+
+// GetNumClasses returns the number of classes configured (10 for MNIST)
+func (c *VPSAContract) GetNumClasses(ctx contractapi.TransactionContextInterface) (int, error) {
+	config, err := c.GetAggregationConfig(ctx)
+	if err != nil {
+		return 0, err
+	}
+
+	return config.NumClasses, nil
+}
+
+// GetClassLabels returns the list of class labels
+func (c *VPSAContract) GetClassLabels(ctx contractapi.TransactionContextInterface) ([]string, error) {
+	config, err := c.GetAggregationConfig(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	return config.ClassLabels, nil
 }
 
 func main() {
